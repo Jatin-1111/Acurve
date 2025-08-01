@@ -22,7 +22,8 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.1",
-    "prisma": "^6.13.0"
+    "prisma": "^6.13.0",
+    "zod": "^4.0.14"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
