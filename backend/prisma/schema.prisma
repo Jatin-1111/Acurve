@@ -7,3 +7,759 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ============================================================================
+// CORE USER MANAGEMENT
+// ============================================================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  FACULTY
+  STUDENT
+  PARENT
+  STAFF
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  GRADUATED
+  EXPELLED
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  password          String
+  role              UserRole
+  status            UserStatus @default(ACTIVE)
+  emailVerified     Boolean   @default(false)
+  emailVerificationToken String?
+  passwordResetToken String?
+  passwordResetExpires DateTime?
+  lastLogin         DateTime?
+  loginAttempts     Int       @default(0)
+  lockoutUntil      DateTime?
+  
+  // Profile completion tracking
+  profileCompleted  Boolean   @default(false)
+  onboardingStep    Int       @default(0)
+  
+  // Timestamps
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime? // Soft delete
+  
+  // Relations
+  profile           UserProfile?
+  student           Student?
+  faculty           Faculty?
+  admin             Admin?
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+  sessions          UserSession[]
+  
+  @@map("users")
+  @@index([email])
+  @@index([role, status])
+  @@index([createdAt])
+}
+
+model UserProfile {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  firstName       String
+  lastName        String
+  middleName      String?
+  displayName     String?
+  dateOfBirth     DateTime?
+  gender          Gender?
+  phone           String?
+  alternatePhone  String?
+  address         Json? // Flexible address structure
+  profileImage    String?
+  bio             String?
+  emergencyContact Json? // Emergency contact details
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("user_profiles")
+  @@index([firstName, lastName])
+  @@index([phone])
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+model UserSession {
+  id          String   @id @default(cuid())
+  userId      String
+  token       String   @unique
+  deviceInfo  Json?    // Browser, OS, IP, etc.
+  isActive    Boolean  @default(true)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("user_sessions")
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+// ============================================================================
+// ACADEMIC STRUCTURE
+// ============================================================================
+
+model Institution {
+  id              String    @id @default(cuid())
+  name            String
+  code            String    @unique
+  type            String    // University, College, etc.
+  address         Json
+  phone           String?
+  email           String?
+  website         String?
+  logo            String?
+  establishedYear Int?
+  accreditation   Json?     // Accreditation details
+  
+  settings        Json      @default("{}")
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  departments     Department[]
+  academicYears   AcademicYear[]
+  
+  @@map("institutions")
+}
+
+model Department {
+  id            String    @id @default(cuid())
+  institutionId String
+  name          String
+  code          String
+  description   String?
+  headOfDeptId  String?   // Faculty ID
+  
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  programs      Program[]
+  faculty       Faculty[]
+  courses       Course[]
+  
+  @@map("departments")
+  @@unique([institutionId, code])
+  @@index([institutionId])
+}
+
+model Program {
+  id            String    @id @default(cuid())
+  departmentId  String
+  name          String
+  code          String
+  type          ProgramType
+  duration      Int       // Duration in semesters
+  totalCredits  Int
+  description   String?
+  
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  department    Department @relation(fields: [departmentId], references: [id])
+  courses       Course[]
+  students      Student[]
+  feeStructures FeeStructure[]
+  
+  @@map("programs")
+  @@unique([departmentId, code])
+  @@index([departmentId])
+  @@index([type])
+}
+
+enum ProgramType {
+  UNDERGRADUATE
+  POSTGRADUATE
+  DIPLOMA
+  CERTIFICATE
+  PHD
+}
+
+model AcademicYear {
+  id            String    @id @default(cuid())
+  institutionId String
+  year          String    // e.g., "2024-2025"
+  startDate     DateTime
+  endDate       DateTime
+  isCurrent     Boolean   @default(false)
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  institution   Institution @relation(fields: [institutionId], references: [id])
+  semesters     Semester[]
+  
+  @@map("academic_years")
+  @@unique([institutionId, year])
+  @@index([institutionId, isCurrent])
+}
+
+model Semester {
+  id              String    @id @default(cuid())
+  academicYearId  String
+  name            String    // e.g., "Fall 2024", "Spring 2025"
+  number          Int       // 1, 2, 3, etc.
+  startDate       DateTime
+  endDate         DateTime
+  registrationStart DateTime
+  registrationEnd DateTime
+  isCurrent       Boolean   @default(false)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  academicYear    AcademicYear @relation(fields: [academicYearId], references: [id])
+  enrollments     Enrollment[]
+  schedules       ClassSchedule[]
+  grades          Grade[]
+  
+  @@map("semesters")
+  @@unique([academicYearId, number])
+  @@index([academicYearId, isCurrent])
+}
+
+// ============================================================================
+// COURSES & CURRICULUM
+// ============================================================================
+
+model Course {
+  id            String    @id @default(cuid())
+  departmentId  String
+  programId     String?
+  code          String
+  name          String
+  description   String?
+  credits       Int
+  type          CourseType
+  level         Int       // 100, 200, 300, 400 level
+  prerequisites Json?     // Array of course IDs
+  
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  department    Department @relation(fields: [departmentId], references: [id])
+  program       Program?   @relation(fields: [programId], references: [id])
+  enrollments   Enrollment[]
+  schedules     ClassSchedule[]
+  grades        Grade[]
+  assignments   Assignment[]
+  
+  @@map("courses")
+  @@unique([departmentId, code])
+  @@index([departmentId])
+  @@index([programId])
+  @@index([type, level])
+}
+
+enum CourseType {
+  CORE
+  ELECTIVE
+  MAJOR
+  MINOR
+  GENERAL_EDUCATION
+  CAPSTONE
+}
+
+// ============================================================================
+// STUDENT MANAGEMENT
+// ============================================================================
+
+model Student {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  studentId     String    @unique
+  programId     String
+  admissionYear Int
+  currentYear   Int       @default(1)
+  currentSemester Int     @default(1)
+  totalCredits  Int       @default(0)
+  cgpa          Float?
+  status        StudentStatus @default(ACTIVE)
+  
+  // Academic details
+  admissionDate DateTime
+  expectedGraduation DateTime?
+  graduationDate DateTime?
+  
+  // Financial
+  totalFeesOwed Decimal  @default(0) @db.Decimal(10,2)
+  totalFeesPaid Decimal  @default(0) @db.Decimal(10,2)
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  program       Program   @relation(fields: [programId], references: [id])
+  enrollments   Enrollment[]
+  grades        Grade[]
+  assignments   AssignmentSubmission[]
+  fees          FeeRecord[]
+  attendances   Attendance[]
+  
+  @@map("students")
+  @@index([studentId])
+  @@index([programId])
+  @@index([status])
+  @@index([admissionYear])
+}
+
+enum StudentStatus {
+  ACTIVE
+  ON_LEAVE
+  SUSPENDED
+  GRADUATED
+  DROPPED_OUT
+  TRANSFERRED
+}
+
+model Enrollment {
+  id          String    @id @default(cuid())
+  studentId   String
+  courseId    String
+  semesterId  String
+  enrolledAt  DateTime  @default(now())
+  status      EnrollmentStatus @default(ENROLLED)
+  
+  // Grade tracking
+  midtermGrade String?
+  finalGrade   String?
+  gpa         Float?
+  
+  student     Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  course      Course    @relation(fields: [courseId], references: [id])
+  semester    Semester  @relation(fields: [semesterId], references: [id])
+  
+  @@map("enrollments")
+  @@unique([studentId, courseId, semesterId])
+  @@index([studentId])
+  @@index([courseId])
+  @@index([semesterId])
+}
+
+enum EnrollmentStatus {
+  ENROLLED
+  WITHDRAWN
+  COMPLETED
+  FAILED
+}
+
+// ============================================================================
+// FACULTY MANAGEMENT
+// ============================================================================
+
+model Faculty {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  facultyId     String    @unique
+  departmentId  String
+  designation   FacultyDesignation
+  specialization String?
+  qualification Json?     // Degrees, certifications
+  experience    Int?      // Years of experience
+  joinDate      DateTime
+  
+  // Employment details
+  employmentType EmploymentType
+  salary        Decimal?  @db.Decimal(10,2)
+  
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department    Department @relation(fields: [departmentId], references: [id])
+  schedules     ClassSchedule[]
+  grades        Grade[]
+  assignments   Assignment[]
+  
+  @@map("faculty")
+  @@index([facultyId])
+  @@index([departmentId])
+  @@index([designation])
+}
+
+enum FacultyDesignation {
+  PROFESSOR
+  ASSOCIATE_PROFESSOR
+  ASSISTANT_PROFESSOR
+  LECTURER
+  INSTRUCTOR
+  VISITING_FACULTY
+  ADJUNCT
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  VISITING
+}
+
+model Admin {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  adminId     String    @unique
+  department  String?
+  designation String
+  
+  permissions Json      @default("[]") // Array of permission strings
+  
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("admins")
+  @@index([adminId])
+}
+
+// ============================================================================
+// SCHEDULING & ATTENDANCE
+// ============================================================================
+
+model ClassSchedule {
+  id          String    @id @default(cuid())
+  courseId    String
+  facultyId   String
+  semesterId  String
+  roomNumber  String
+  dayOfWeek   Int       // 1-7 (Monday-Sunday)
+  startTime   String    // HH:MM format
+  endTime     String    // HH:MM format
+  
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  course      Course    @relation(fields: [courseId], references: [id])
+  faculty     Faculty   @relation(fields: [facultyId], references: [id])
+  semester    Semester  @relation(fields: [semesterId], references: [id])
+  attendances Attendance[]
+  
+  @@map("class_schedules")
+  @@index([courseId])
+  @@index([facultyId])
+  @@index([semesterId])
+  @@index([dayOfWeek])
+}
+
+model Attendance {
+  id          String    @id @default(cuid())
+  scheduleId  String
+  studentId   String
+  date        DateTime  @db.Date
+  status      AttendanceStatus
+  remarks     String?
+  
+  recordedAt  DateTime  @default(now())
+  recordedBy  String?   // Faculty/Admin ID
+  
+  schedule    ClassSchedule @relation(fields: [scheduleId], references: [id])
+  student     Student   @relation(fields: [studentId], references: [id])
+  
+  @@map("attendances")
+  @@unique([scheduleId, studentId, date])
+  @@index([studentId])
+  @@index([date])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+// ============================================================================
+// GRADES & ASSESSMENTS
+// ============================================================================
+
+model Grade {
+  id          String    @id @default(cuid())
+  studentId   String
+  courseId    String
+  semesterId  String
+  facultyId   String
+  
+  // Grade components
+  assignments Decimal?  @db.Decimal(5,2)
+  midterm     Decimal?  @db.Decimal(5,2)
+  final       Decimal?  @db.Decimal(5,2)
+  participation Decimal? @db.Decimal(5,2)
+  
+  // Final grade
+  totalScore  Decimal?  @db.Decimal(5,2)
+  letterGrade String?
+  gpa         Decimal?  @db.Decimal(3,2)
+  
+  status      GradeStatus @default(IN_PROGRESS)
+  remarks     String?
+  
+  gradedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  student     Student   @relation(fields: [studentId], references: [id])
+  course      Course    @relation(fields: [courseId], references: [id])
+  semester    Semester  @relation(fields: [semesterId], references: [id])
+  faculty     Faculty   @relation(fields: [facultyId], references: [id])
+  
+  @@map("grades")
+  @@unique([studentId, courseId, semesterId])
+  @@index([studentId])
+  @@index([courseId])
+  @@index([semesterId])
+}
+
+enum GradeStatus {
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  DISPUTE
+}
+
+model Assignment {
+  id          String    @id @default(cuid())
+  courseId    String
+  facultyId   String
+  title       String
+  description String?
+  type        AssignmentType
+  maxScore    Decimal   @db.Decimal(5,2)
+  weight      Decimal   @db.Decimal(3,2) // Percentage weight in final grade
+  
+  dueDate     DateTime
+  isActive    Boolean   @default(true)
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  course      Course    @relation(fields: [courseId], references: [id])
+  faculty     Faculty   @relation(fields: [facultyId], references: [id])
+  submissions AssignmentSubmission[]
+  
+  @@map("assignments")
+  @@index([courseId])
+  @@index([facultyId])
+  @@index([dueDate])
+}
+
+enum AssignmentType {
+  HOMEWORK
+  PROJECT
+  QUIZ
+  EXAM
+  PRESENTATION
+  LAB_WORK
+}
+
+model AssignmentSubmission {
+  id           String    @id @default(cuid())
+  assignmentId String
+  studentId    String
+  content      String?   // Text submission
+  attachments  Json?     // File URLs/paths
+  score        Decimal?  @db.Decimal(5,2)
+  feedback     String?
+  
+  submittedAt  DateTime  @default(now())
+  gradedAt     DateTime?
+  isLate       Boolean   @default(false)
+  
+  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  student      Student   @relation(fields: [studentId], references: [id])
+  
+  @@map("assignment_submissions")
+  @@unique([assignmentId, studentId])
+  @@index([studentId])
+  @@index([submittedAt])
+}
+
+// ============================================================================
+// FINANCIAL MANAGEMENT
+// ============================================================================
+
+model FeeStructure {
+  id          String    @id @default(cuid())
+  programId   String
+  year        Int
+  semester    Int?      // Null means annual fee
+  feeType     FeeType
+  amount      Decimal   @db.Decimal(10,2)
+  description String?
+  
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  program     Program   @relation(fields: [programId], references: [id])
+  
+  @@map("fee_structures")
+  @@index([programId])
+  @@index([year, semester])
+}
+
+enum FeeType {
+  TUITION
+  ADMISSION
+  EXAMINATION
+  LIBRARY
+  LABORATORY
+  SPORTS
+  HOSTEL
+  TRANSPORT
+  MISCELLANEOUS
+}
+
+model FeeRecord {
+  id          String    @id @default(cuid())
+  studentId   String
+  feeType     FeeType
+  amount      Decimal   @db.Decimal(10,2)
+  dueDate     DateTime
+  paidDate    DateTime?
+  status      PaymentStatus @default(PENDING)
+  
+  // Payment details
+  paymentMethod String?
+  transactionId String?
+  remarks     String?
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  student     Student   @relation(fields: [studentId], references: [id])
+  
+  @@map("fee_records")
+  @@index([studentId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+  PARTIAL
+  REFUNDED
+}
+
+// ============================================================================
+// COMMUNICATION & NOTIFICATIONS
+// ============================================================================
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType
+  priority  NotificationPriority @default(MEDIUM)
+  
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  
+  // Additional data
+  metadata  Json?     // Extra data for specific notification types
+  actionUrl String?   // Deep link for action
+  
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+  
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("notifications")
+  @@index([userId, isRead])
+  @@index([type])
+  @@index([createdAt])
+}
+
+enum NotificationType {
+  ACADEMIC
+  FINANCIAL
+  ADMINISTRATIVE
+  GENERAL
+  EMERGENCY
+  ASSIGNMENT
+  GRADE
+}
+
+enum NotificationPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+// ============================================================================
+// AUDIT & LOGGING
+// ============================================================================
+
+model AuditLog {
+  id        String    @id @default(cuid())
+  userId    String?
+  action    String    // CREATE, UPDATE, DELETE, LOGIN, etc.
+  resource  String    // Table/model name
+  resourceId String?  // ID of the affected resource
+  oldData   Json?     // Previous state
+  newData   Json?     // New state
+  ipAddress String?
+  userAgent String?
+  
+  createdAt DateTime  @default(now())
+  
+  user      User?     @relation(fields: [userId], references: [id])
+  
+  @@map("audit_logs")
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// SYSTEM SETTINGS
+// ============================================================================
+
+model SystemSetting {
+  id        String    @id @default(cuid())
+  key       String    @unique
+  value     Json
+  category  String
+  description String?
+  
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  
+  @@map("system_settings")
+  @@index([category])
+}
